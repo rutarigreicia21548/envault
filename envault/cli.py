@@ -1,69 +1,72 @@
-"""Command-line interface for envault."""
-
-import sys
-from pathlib import Path
+"""CLI entry-point for envault."""
 
 import click
+from pathlib import Path
 
-from envault.storage import LocalStorage
 from envault.vault import Vault
 
 
-def _make_vault(project: str, env_path: Path, password: str) -> Vault:
-    storage = LocalStorage()
-    return Vault(storage=storage, project=project, env_path=env_path, password=password)
+def _make_vault(project: str, password: str, env_file: str) -> Vault:
+    return Vault(project=project, password=password, env_path=Path(env_file))
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """envault — lightweight secrets manager."""
 
 
 @cli.command()
-@click.argument("project")
-@click.option("--env", default=".env", show_default=True, help="Path to .env file.")
-@click.password_option(help="Encryption password.")
-def push(project: str, env: str, password: str):
-    """Encrypt and push .env file to remote storage."""
-    env_path = Path(env)
-    if not env_path.exists():
-        click.echo(f"Error: {env_path} not found.", err=True)
-        sys.exit(1)
-    vault = _make_vault(project, env_path, password)
-    vault.push()
-    click.echo(f"Pushed secrets for project '{project}'.")
-
-
-@cli.command()
-@click.argument("project")
-@click.option("--env", default=".env", show_default=True, help="Path to .env file.")
-@click.option("--password", prompt=True, hide_input=True, help="Encryption password.")
-def pull(project: str, env: str, password: str):
-    """Pull and decrypt .env file from remote storage."""
-    env_path = Path(env)
-    vault = _make_vault(project, env_path, password)
+@click.option("--project", required=True, help="Project name")
+@click.option("--password", required=True, hide_input=True, help="Encryption password")
+@click.option("--env-file", default=".env", show_default=True, help="Path to .env file")
+def push(project: str, password: str, env_file: str) -> None:
+    """Encrypt and push local .env to remote storage."""
+    vault = _make_vault(project, password, env_file)
     try:
-        vault.pull()
-    except KeyError:
-        click.echo(f"Error: project '{project}' not found in storage.", err=True)
-        sys.exit(1)
-    except Exception as exc:  # noqa: BLE001
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
-    click.echo(f"Pulled secrets for project '{project}' into {env_path}.")
+        result = vault.push()
+        click.echo(f"Pushed {result['keys']} key(s) for project '{project}'.")
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc))
 
 
 @cli.command()
-@click.argument("project")
-@click.option("--env", default=".env", show_default=True, help="Path to .env file.")
-@click.option("--password", prompt=True, hide_input=True, help="Encryption password.")
-def status(project: str, env: str, password: str):
-    """Show sync status between local .env and stored secrets."""
-    env_path = Path(env)
-    vault = _make_vault(project, env_path, password)
-    state = vault.status()
-    click.echo(f"Status for project '{project}': {state}")
+@click.option("--project", required=True, help="Project name")
+@click.option("--password", required=True, hide_input=True, help="Encryption password")
+@click.option("--env-file", default=".env", show_default=True, help="Path to .env file")
+def pull(project: str, password: str, env_file: str) -> None:
+    """Pull and decrypt remote .env to local file."""
+    vault = _make_vault(project, password, env_file)
+    try:
+        result = vault.pull()
+        click.echo(f"Pulled {result['keys']} key(s) for project '{project}'.")
+    except Exception as exc:
+        raise click.ClickException(str(exc))
 
 
-if __name__ == "__main__":
-    cli()
+@cli.command()
+@click.option("--project", required=True, help="Project name")
+@click.option("--password", required=True, hide_input=True, help="Encryption password")
+@click.option("--env-file", default=".env", show_default=True, help="Path to .env file")
+def status(project: str, password: str, env_file: str) -> None:
+    """Show sync status for a project."""
+    vault = _make_vault(project, password, env_file)
+    info = vault.status()
+    click.echo(f"Local : {'yes' if info['local'] else 'no'}")
+    click.echo(f"Remote: {'yes' if info['remote'] else 'no'}")
+    click.echo(f"In sync: {'yes' if info['in_sync'] else 'no'}")
+
+
+@cli.command()
+@click.option("--project", required=True, help="Project name")
+@click.option("--password", required=True, hide_input=True, help="Encryption password")
+@click.option("--env-file", default=".env", show_default=True, help="Path to .env file")
+def history(project: str, password: str, env_file: str) -> None:
+    """Display the audit log for a project."""
+    vault = _make_vault(project, password, env_file)
+    entries = vault.history()
+    if not entries:
+        click.echo("No history found.")
+        return
+    for entry in entries:
+        detail = f" — {entry['details']}" if entry.get("details") else ""
+        click.echo(f"[{entry['timestamp']}] {entry['action']}{detail}")

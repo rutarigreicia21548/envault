@@ -1,57 +1,65 @@
-"""High-level Vault API: push/pull .env files to/from encrypted storage."""
+"""Vault: high-level API for push/pull/status of .env files."""
 
-import os
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from envault.crypto import encrypt, decrypt
 from envault.storage import LocalStorage
+import envault.audit as audit
 
 
 class Vault:
-    """Manages encryption and storage of .env files for a project."""
-
-    def __init__(self, project: str, password: str, storage: Optional[LocalStorage] = None):
-        if not project:
-            raise ValueError("Project name must not be empty")
-        if not password:
-            raise ValueError("Password must not be empty")
+    def __init__(
+        self,
+        project: str,
+        password: str,
+        env_path: Path,
+        storage: Optional[LocalStorage] = None,
+    ) -> None:
         self.project = project
         self.password = password
+        self.env_path = Path(env_path)
         self.storage = storage or LocalStorage()
 
-    def push(self, env_path: str | Path = ".env") -> None:
-        """Encrypt and upload a local .env file to storage."""
-        env_path = Path(env_path)
-        if not env_path.exists():
-            raise FileNotFoundError(f".env file not found: {env_path}")
-        plaintext = env_path.read_text(encoding="utf-8")
-        encrypted = encrypt(plaintext, self.password)
-        metadata = {
-            "pushed_at": datetime.now(timezone.utc).isoformat(),
-            "source": str(env_path.resolve()),
+    def push(self) -> Dict[str, int]:
+        """Encrypt and upload the local .env file to storage."""
+        if not self.env_path.exists():
+            raise FileNotFoundError(f"{self.env_path} not found")
+        plaintext = self.env_path.read_text()
+        ciphertext = encrypt(plaintext, self.password)
+        self.storage.save(self.project, ciphertext)
+        key_count = sum(
+            1
+            for line in plaintext.splitlines()
+            if line.strip() and not line.strip().startswith("#") and "=" in line
+        )
+        audit.record(self.project, "push", details=f"pushed {key_count} keys")
+        return {"keys": key_count}
+
+    def pull(self) -> Dict[str, int]:
+        """Download and decrypt the remote .env file to disk."""
+        ciphertext = self.storage.load(self.project)
+        plaintext = decrypt(ciphertext, self.password)
+        self.env_path.write_text(plaintext)
+        key_count = sum(
+            1
+            for line in plaintext.splitlines()
+            if line.strip() and not line.strip().startswith("#") and "=" in line
+        )
+        audit.record(self.project, "pull", details=f"pulled {key_count} keys")
+        return {"keys": key_count}
+
+    def status(self) -> Dict[str, object]:
+        """Return sync status comparing local and remote state."""
+        local_exists = self.env_path.exists()
+        remote_exists = self.storage.exists(self.project)
+        audit.record(self.project, "status")
+        return {
+            "local": local_exists,
+            "remote": remote_exists,
+            "in_sync": local_exists and remote_exists,
         }
-        self.storage.save(self.project, encrypted, metadata)
 
-    def pull(self, env_path: str | Path = ".env", overwrite: bool = False) -> None:
-        """Download and decrypt secrets, writing them to a local .env file."""
-        env_path = Path(env_path)
-        if env_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"{env_path} already exists. Use overwrite=True to replace it."
-            )
-        encrypted, _ = self.storage.load(self.project)
-        plaintext = decrypt(encrypted, self.password)
-        env_path.write_text(plaintext, encoding="utf-8")
-
-    def status(self) -> dict:
-        """Return metadata about the stored secrets for this project."""
-        if not self.storage.exists(self.project):
-            return {"project": self.project, "stored": False}
-        _, metadata = self.storage.load(self.project)
-        return {"project": self.project, "stored": True, **metadata}
-
-    def delete(self) -> None:
-        """Remove stored secrets for this project."""
-        self.storage.delete(self.project)
+    def history(self) -> list:
+        """Return the audit log for this project."""
+        return audit.get_log(self.project)
