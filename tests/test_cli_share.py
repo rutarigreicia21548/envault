@@ -24,22 +24,22 @@ def mock_vault():
     return vault
 
 
-def test_share_create_outputs_token(runner, mock_vault):
+def _invoke_share_create(runner, mock_vault, extra_args=None):
+    """Helper to invoke share_create with common arguments."""
+    base_args = ["--project", "myapp", "--password", PASSWORD]
+    args = base_args + (extra_args or [])
     with patch("envault.cli_share._make_vault", return_value=mock_vault):
-        result = runner.invoke(
-            share_create,
-            ["--project", "myapp", "--password", PASSWORD, "--ttl", "3600"],
-        )
+        return runner.invoke(share_create, args)
+
+
+def test_share_create_outputs_token(runner, mock_vault):
+    result = _invoke_share_create(runner, mock_vault, ["--ttl", "3600"])
     assert result.exit_code == 0
     assert "fingerprint" in result.output
 
 
 def test_share_create_with_label(runner, mock_vault):
-    with patch("envault.cli_share._make_vault", return_value=mock_vault):
-        result = runner.invoke(
-            share_create,
-            ["--project", "myapp", "--password", PASSWORD, "--label", "staging"],
-        )
+    result = _invoke_share_create(runner, mock_vault, ["--label", "staging"])
     assert result.exit_code == 0
 
 
